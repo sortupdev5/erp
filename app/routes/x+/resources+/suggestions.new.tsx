@@ -1,0 +1,75 @@
+import { getCarbonServiceRole } from "@carbon/auth";
+import { requirePermissions } from "@carbon/auth/auth.server";
+import { validator } from "@carbon/form";
+import type { notifyTask } from "@carbon/jobs/trigger/notify";
+import { NotificationEvent } from "@carbon/notifications";
+import { tasks } from "@trigger.dev/sdk";
+import type { ActionFunctionArgs } from "react-router";
+import { getCompany } from "~/modules/settings";
+import { suggestionValidator } from "~/modules/shared";
+
+export async function action({ request }: ActionFunctionArgs) {
+  const { userId, companyId } = await requirePermissions(request, {});
+
+  const formData = await request.formData();
+  const validation = await validator(suggestionValidator).validate(formData);
+
+  if (validation.error) {
+    return {
+      success: false,
+      message: "Failed to submit suggestion"
+    };
+  }
+
+  const {
+    attachmentPath,
+    emoji,
+    suggestion,
+    path,
+    userId: formUserId
+  } = validation.data;
+  const serviceRole = await getCarbonServiceRole();
+
+  const insertSuggestion = await serviceRole
+    .from("suggestion")
+    .insert([
+      {
+        suggestion,
+        emoji,
+        path,
+        attachmentPath: attachmentPath || null,
+        userId: formUserId || null,
+        companyId
+      }
+    ])
+    .select("id")
+    .single();
+
+  if (insertSuggestion.error) {
+    return {
+      success: false,
+      message: "Failed to submit suggestion"
+    };
+  }
+
+  const company = await getCompany(serviceRole, companyId);
+
+  if (!company.error && company.data?.suggestionNotificationGroup?.length) {
+    try {
+      await tasks.trigger<typeof notifyTask>("notify", {
+        companyId,
+        documentId: insertSuggestion.data.id,
+        event: NotificationEvent.SuggestionResponse,
+        recipient: {
+          type: "group",
+          groupIds: company.data.suggestionNotificationGroup
+        },
+        from: formUserId || userId
+      });
+    } catch (err) {
+      console.error("Failed to trigger suggestion notification", err);
+    }
+  }
+
+  return { success: true, message: "Suggestion submitted" };
+}

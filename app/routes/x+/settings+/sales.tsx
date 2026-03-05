@@ -1,0 +1,458 @@
+import { error, useCarbon } from "@carbon/auth";
+import { requirePermissions } from "@carbon/auth/auth.server";
+import { flash } from "@carbon/auth/session.server";
+// biome-ignore lint/suspicious/noShadowRestrictedNames: suppressed due to migration
+import { Boolean, Submit, ValidatedForm, validator } from "@carbon/form";
+import type { JSONContent } from "@carbon/react";
+import {
+  Badge,
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+  generateHTML,
+  Heading,
+  HStack,
+  Label,
+  ScrollArea,
+  toast,
+  useDebounce,
+  VStack
+} from "@carbon/react";
+import { Editor } from "@carbon/react/Editor";
+import { getLocalTimeZone, today } from "@internationalized/date";
+import { useEffect, useState } from "react";
+import { LuCircleCheck } from "react-icons/lu";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { redirect, useFetcher, useLoaderData } from "react-router";
+import { EmailRecipients, Users } from "~/components/Form";
+import { usePermissions, useUser } from "~/hooks";
+import {
+  defaultCustomerCcValidator,
+  digitalQuoteValidator,
+  getCompanySettings,
+  getTerms,
+  includeThumbnailsOnSalesPdfsValidator,
+  rfqReadyValidator,
+  updateDefaultCustomerCc,
+  updateDigitalQuoteSetting,
+  updateRfqReadySetting,
+  updateSalesPdfThumbnails
+} from "~/modules/settings";
+import type { Handle } from "~/utils/handle";
+import { path } from "~/utils/path";
+
+export const handle: Handle = {
+  breadcrumb: "Sales",
+  to: path.to.salesSettings
+};
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  const { client, companyId } = await requirePermissions(request, {
+    view: "settings"
+  });
+
+  const [companySettings, terms] = await Promise.all([
+    getCompanySettings(client, companyId),
+    getTerms(client, companyId)
+  ]);
+  if (!companySettings.data)
+    throw redirect(
+      path.to.settings,
+      await flash(
+        request,
+        error(companySettings.error, "Failed to get company settings")
+      )
+    );
+  return { companySettings: companySettings.data, terms: terms.data };
+}
+
+export async function action({ request }: ActionFunctionArgs) {
+  const { client, companyId } = await requirePermissions(request, {
+    update: "settings"
+  });
+
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  switch (intent) {
+    case "digitalQuote":
+      const validation = await validator(digitalQuoteValidator).validate(
+        formData
+      );
+
+      if (validation.error) {
+        return { success: false, message: "Invalid form data" };
+      }
+
+      const digitalQuote = await updateDigitalQuoteSetting(
+        client,
+        companyId,
+        validation.data.digitalQuoteEnabled,
+        validation.data.digitalQuoteNotificationGroup ?? [],
+        validation.data.digitalQuoteIncludesPurchaseOrders
+      );
+      if (digitalQuote.error)
+        return { success: false, message: digitalQuote.error.message };
+
+      return { success: true, message: "Digital quote setting updated" };
+
+    case "pdfs":
+      const thumbnailsValidation = await validator(
+        includeThumbnailsOnSalesPdfsValidator
+      ).validate(formData);
+
+      if (thumbnailsValidation.error) {
+        return { success: false, message: "Invalid form data" };
+      }
+
+      const thumbnailsResult = await updateSalesPdfThumbnails(
+        client,
+        companyId,
+        thumbnailsValidation.data.includeThumbnailsOnSalesPdfs
+      );
+
+      if (thumbnailsResult.error)
+        return { success: false, message: thumbnailsResult.error.message };
+
+      return { success: true, message: "PDF settings updated" };
+
+    case "rfq":
+      const rfqValidation =
+        await validator(rfqReadyValidator).validate(formData);
+
+      if (rfqValidation.error) {
+        return { success: false, message: "Invalid form data" };
+      }
+
+      const rfqSettings = await updateRfqReadySetting(
+        client,
+        companyId,
+        rfqValidation.data.rfqReadyNotificationGroup ?? []
+      );
+
+      if (rfqSettings.error)
+        return { success: false, message: rfqSettings.error.message };
+
+      return { success: true, message: "RFQ setting updated" };
+
+    case "emails":
+      const defaultCustomerCcValidation = await validator(
+        defaultCustomerCcValidator
+      ).validate(formData);
+
+      if (defaultCustomerCcValidation.error) {
+        return { success: false, message: "Invalid form data" };
+      }
+
+      const defaultCustomerCcResult = await updateDefaultCustomerCc(
+        client,
+        companyId,
+        defaultCustomerCcValidation.data.defaultCustomerCc ?? []
+      );
+
+      if (defaultCustomerCcResult.error) {
+        return {
+          success: false,
+          message: defaultCustomerCcResult.error.message
+        };
+      }
+
+      return {
+        success: true,
+        message: "Customer email settings updated"
+      };
+  }
+
+  return { success: false, message: "Unknown intent" };
+}
+
+export default function SalesSettingsRoute() {
+  const { companySettings, terms } = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<typeof action>();
+  const [digitalQuoteEnabled, setDigitalQuoteEnabled] = useState(
+    companySettings.digitalQuoteEnabled ?? false
+  );
+
+  useEffect(() => {
+    if (fetcher.data?.success === true && fetcher?.data?.message) {
+      toast.success(fetcher.data.message);
+    }
+
+    if (fetcher.data?.success === false && fetcher?.data?.message) {
+      toast.error(fetcher.data.message);
+    }
+  }, [fetcher.data?.message, fetcher.data?.success]);
+
+  const permissions = usePermissions();
+  const { carbon } = useCarbon();
+  const {
+    id: userId,
+    company: { id: companyId }
+  } = useUser();
+
+  const [salesTermsStatus, setSalesTermsStatus] = useState<"saved" | "draft">(
+    "saved"
+  );
+
+  const handleUpdateSalesTerms = (content: JSONContent) => {
+    setSalesTermsStatus("draft");
+    onUpdateSalesTerms(content);
+  };
+
+  const onUpdateSalesTerms = useDebounce(
+    async (content: JSONContent) => {
+      setSalesTermsStatus("draft");
+      await carbon
+        ?.from("terms")
+        .update({
+          salesTerms: content,
+          updatedAt: today(getLocalTimeZone()).toString(),
+          updatedBy: userId
+        })
+        .eq("id", companyId);
+      setSalesTermsStatus("saved");
+    },
+    2500,
+    true
+  );
+
+  const onUploadImage = async (file: File) => {
+    // Implement image upload logic here
+    // This is a placeholder function
+    console.error("Image upload not implemented", file);
+    return "";
+  };
+
+  return (
+    <ScrollArea className="w-full h-[calc(100dvh-49px)]">
+      <VStack
+        spacing={4}
+        className="py-12 px-4 max-w-[60rem] h-full mx-auto gap-4"
+      >
+        <Heading size="h3">Sales</Heading>
+        <Card>
+          <ValidatedForm
+            method="post"
+            validator={digitalQuoteValidator}
+            defaultValues={{
+              digitalQuoteEnabled: companySettings.digitalQuoteEnabled ?? false,
+              digitalQuoteNotificationGroup:
+                companySettings.digitalQuoteNotificationGroup ?? [],
+              digitalQuoteIncludesPurchaseOrders:
+                companySettings.digitalQuoteIncludesPurchaseOrders ?? false
+            }}
+            fetcher={fetcher}
+          >
+            <input type="hidden" name="intent" value="digitalQuote" />
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                Digital Quotes
+              </CardTitle>
+              <CardDescription>
+                Enable digital quotes for your company. This will allow you to
+                send digital quotes to your customers, and allow them to accept
+                them online.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-8 max-w-[400px]">
+                <div className="flex flex-col gap-2">
+                  <Boolean
+                    name="digitalQuoteEnabled"
+                    description="Digital Quotes Enabled"
+                    onChange={(value) => {
+                      setDigitalQuoteEnabled(value);
+                    }}
+                  />
+                  <Boolean
+                    name="digitalQuoteIncludesPurchaseOrders"
+                    description="Include Purchase Orders"
+                    isDisabled={!digitalQuoteEnabled}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <Label>Notifications</Label>
+                  <Users
+                    name="digitalQuoteNotificationGroup"
+                    label="Who should receive notifications when a digital quote is accepted or expired?"
+                    type="employee"
+                  />
+                </div>
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Submit
+                isDisabled={fetcher.state !== "idle"}
+                isLoading={
+                  fetcher.state !== "idle" &&
+                  fetcher.formData?.get("intent") === "digitalQuote"
+                }
+              >
+                Save
+              </Submit>
+            </CardFooter>
+          </ValidatedForm>
+        </Card>
+        <Card>
+          <ValidatedForm
+            method="post"
+            validator={rfqReadyValidator}
+            defaultValues={{
+              rfqReadyNotificationGroup:
+                companySettings.rfqReadyNotificationGroup ?? []
+            }}
+            fetcher={fetcher}
+          >
+            <input type="hidden" name="intent" value="rfq" />
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">RFQ</CardTitle>
+              <CardDescription>
+                Enable notifications when an RFQ is marked as ready for quote.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-8 max-w-[400px]">
+                <div className="flex flex-col gap-2">
+                  <Label>Notifications</Label>
+                  <Users
+                    name="rfqReadyNotificationGroup"
+                    label="Who should receive notifications when a RFQ is marked ready for quote?"
+                    type="employee"
+                  />
+                </div>
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Submit
+                isDisabled={fetcher.state !== "idle"}
+                isLoading={
+                  fetcher.state !== "idle" &&
+                  fetcher.formData?.get("intent") === "rfq"
+                }
+              >
+                Save
+              </Submit>
+            </CardFooter>
+          </ValidatedForm>
+        </Card>
+        <Card>
+          <ValidatedForm
+            method="post"
+            validator={defaultCustomerCcValidator}
+            defaultValues={{
+              defaultCustomerCc: companySettings.defaultCustomerCc ?? []
+            }}
+            fetcher={fetcher}
+          >
+            <input type="hidden" name="intent" value="emails" />
+            <CardHeader>
+              <CardTitle>Emails</CardTitle>
+              <CardDescription>
+                These email addresses will be automatically CC'd on all quote
+                emails sent to customers.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-8 max-w-[400px]">
+                <EmailRecipients
+                  name="defaultCustomerCc"
+                  label="Default CC Recipients"
+                />
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Submit
+                isDisabled={fetcher.state !== "idle"}
+                isLoading={
+                  fetcher.state !== "idle" &&
+                  fetcher.formData?.get("intent") === "defaultCustomerCc"
+                }
+              >
+                Save
+              </Submit>
+            </CardFooter>
+          </ValidatedForm>
+        </Card>
+
+        <Card>
+          <ValidatedForm
+            method="post"
+            validator={includeThumbnailsOnSalesPdfsValidator}
+            defaultValues={{
+              includeThumbnailsOnSalesPdfs:
+                companySettings.includeThumbnailsOnSalesPdfs ?? true
+            }}
+            fetcher={fetcher}
+          >
+            <input type="hidden" name="intent" value="pdfs" />
+            <CardHeader>
+              <CardTitle>PDFs</CardTitle>
+              <CardDescription>
+                Show part thumbnails on quotes, sales orders, sales invoices,
+                and shipments.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-2 max-w-[400px]">
+                <Boolean
+                  name="includeThumbnailsOnSalesPdfs"
+                  description="Include Thumbnails in PDFs"
+                />
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Submit
+                isDisabled={fetcher.state !== "idle"}
+                isLoading={
+                  fetcher.state !== "idle" &&
+                  fetcher.formData?.get("intent") ===
+                    "includeThumbnailsOnSalesPdfs"
+                }
+              >
+                Save
+              </Submit>
+            </CardFooter>
+          </ValidatedForm>
+        </Card>
+        <Card>
+          <HStack className="justify-between items-start">
+            <CardHeader>
+              <CardTitle>Sales Terms &amp; Conditions</CardTitle>
+              <CardDescription>
+                Define the terms and conditions for quotes and sales orders
+              </CardDescription>
+            </CardHeader>
+            <CardAction className="py-6">
+              {salesTermsStatus === "draft" ? (
+                <Badge variant="secondary">Draft</Badge>
+              ) : (
+                <LuCircleCheck className="w-4 h-4 text-emerald-500" />
+              )}
+            </CardAction>
+          </HStack>
+          <CardContent>
+            {permissions.can("update", "settings") ? (
+              <Editor
+                initialValue={(terms?.salesTerms ?? {}) as JSONContent}
+                onUpload={onUploadImage}
+                onChange={handleUpdateSalesTerms}
+              />
+            ) : (
+              <div
+                className="prose dark:prose-invert"
+                dangerouslySetInnerHTML={{
+                  __html: generateHTML(terms?.salesTerms as JSONContent)
+                }}
+              />
+            )}
+          </CardContent>
+        </Card>
+      </VStack>
+    </ScrollArea>
+  );
+}

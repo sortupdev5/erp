@@ -1,0 +1,196 @@
+import {
+  Badge,
+  Button,
+  HStack,
+  MenuIcon,
+  MenuItem,
+  useDisclosure
+} from "@carbon/react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { memo, useCallback, useMemo, useState } from "react";
+import { BiAddToQueue } from "react-icons/bi";
+import { BsListUl } from "react-icons/bs";
+import { LuListChecks, LuPencil, LuTrash } from "react-icons/lu";
+import { useNavigate } from "react-router";
+import { Hyperlink, New, Table } from "~/components";
+import { ConfirmDelete } from "~/components/Modals";
+import { usePermissions, useUrlParams } from "~/hooks";
+import { path } from "~/utils/path";
+import type { AttributeCategory } from "../../types";
+
+type AttributeCategoriesTableProps = {
+  data: AttributeCategory[];
+  count: number;
+};
+
+const AttributeCategoriesTable = memo(
+  ({ data, count }: AttributeCategoriesTableProps) => {
+    const navigate = useNavigate();
+    const [params] = useUrlParams();
+    const permissions = usePermissions();
+    const deleteModal = useDisclosure();
+    const [selectedCategory, setSelectedCategory] = useState<
+      AttributeCategory | undefined
+    >();
+
+    const onDelete = (data: AttributeCategory) => {
+      setSelectedCategory(data);
+      deleteModal.onOpen();
+    };
+
+    const onDeleteCancel = () => {
+      setSelectedCategory(undefined);
+      deleteModal.onClose();
+    };
+
+    const columns = useMemo<ColumnDef<AttributeCategory>[]>(() => {
+      return [
+        {
+          accessorKey: "name",
+          header: "Category",
+          cell: ({ row }) => (
+            <Hyperlink to={row.original.id} className="flex items-center gap-2">
+              {row.original.emoji ? (
+                <span className="text-base">{row.original.emoji}</span>
+              ) : (
+                <LuListChecks />
+              )}{" "}
+              <span>{row.original.name}</span>
+            </Hyperlink>
+          )
+        },
+        {
+          header: "Attributes",
+          cell: ({ row }) => (
+            <HStack className="text-xs text-muted-foreground">
+              <LuListChecks />
+              <span>
+                {Array.isArray(row.original.userAttribute)
+                  ? (row.original.userAttribute?.length ?? 0)
+                  : 0}{" "}
+                Attributes
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  navigate(
+                    `${path.to.attributeCategoryList(
+                      row.original.id
+                    )}?${params?.toString()}`
+                  );
+                }}
+              >
+                Edit
+              </Button>
+            </HStack>
+          )
+        },
+        {
+          accessorKey: "public",
+          header: "Visibility",
+          cell: (item) => {
+            const isPublic = item.getValue<boolean>()?.toString() === "true";
+            return (
+              <Badge variant={isPublic ? undefined : "outline"}>
+                {isPublic ? "Public" : "Private"}
+              </Badge>
+            );
+          },
+          meta: {
+            filter: {
+              type: "static",
+              options: [
+                { label: "Public", value: "true" },
+                { label: "Private", value: "false" }
+              ]
+            },
+            pluralHeader: "Visibilities"
+          }
+        }
+      ];
+    }, [navigate, params]);
+
+    // biome-ignore lint/correctness/useExhaustiveDependencies: suppressed due to migration
+    const renderContextMenu = useCallback(
+      (row: AttributeCategory) => {
+        return (
+          <>
+            <MenuItem
+              onClick={() => {
+                navigate(
+                  `${path.to.newAttributeForCategory(
+                    row.id
+                  )}?${params?.toString()}`
+                );
+              }}
+            >
+              <MenuIcon icon={<BiAddToQueue />} />
+              New Attribute
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                navigate(
+                  `${path.to.attributeCategoryList(
+                    row.id
+                  )}?${params?.toString()}`
+                );
+              }}
+            >
+              <MenuIcon icon={<BsListUl />} />
+              View Attributes
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                navigate(path.to.attributeCategory(row.id));
+              }}
+            >
+              <MenuIcon icon={<LuPencil />} />
+              Edit Category
+            </MenuItem>
+            <MenuItem
+              destructive
+              disabled={row.protected || !permissions.can("delete", "users")}
+              onClick={() => onDelete(row)}
+            >
+              <MenuIcon icon={<LuTrash />} />
+              Delete Category
+            </MenuItem>
+          </>
+        );
+      },
+
+      [navigate, params, permissions]
+    );
+
+    return (
+      <>
+        <Table<AttributeCategory>
+          data={data}
+          columns={columns}
+          count={count ?? 0}
+          primaryAction={
+            permissions.can("update", "people") && (
+              <New label="Category" to={`new?${params.toString()}`} />
+            )
+          }
+          renderContextMenu={renderContextMenu}
+          title="Attributes"
+        />
+        {selectedCategory && selectedCategory.id && (
+          <ConfirmDelete
+            action={path.to.deleteAttributeCategory(selectedCategory.id)}
+            name={selectedCategory?.name ?? ""}
+            text={`Are you sure you want to deactivate the ${selectedCategory?.name} attribute category?`}
+            isOpen={deleteModal.isOpen}
+            onCancel={onDeleteCancel}
+            onSubmit={onDeleteCancel}
+          />
+        )}
+      </>
+    );
+  }
+);
+
+AttributeCategoriesTable.displayName = "AttributeCategoriesTable";
+export default AttributeCategoriesTable;

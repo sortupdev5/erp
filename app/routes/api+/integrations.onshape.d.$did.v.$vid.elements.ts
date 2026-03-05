@@ -1,0 +1,77 @@
+import { requirePermissions } from "@carbon/auth/auth.server";
+import { getOnshapeClient } from "@carbon/ee/onshape";
+import type {
+  LoaderFunctionArgs,
+  ShouldRevalidateFunction
+} from "react-router";
+
+export const shouldRevalidate: ShouldRevalidateFunction = () => {
+  return false;
+};
+
+export async function loader({ request, params }: LoaderFunctionArgs) {
+  const { client, companyId, userId } = await requirePermissions(request, {});
+
+  const { did } = params;
+  if (!did) {
+    return {
+      data: [],
+      error: "Document ID is required"
+    };
+  }
+
+  const { vid } = params;
+  if (!vid) {
+    return {
+      data: [],
+      error: "Version ID is required"
+    };
+  }
+
+  const result = await getOnshapeClient(client, companyId, userId);
+
+  if (result.error) {
+    return {
+      data: [],
+      error: result.error
+    };
+  }
+
+  const onshapeClient = result.client;
+
+  try {
+    let limit = 20;
+    let offset = 0;
+    let allDocuments: Array<{ id: string; name: string }> = [];
+
+    while (true && offset < 100) {
+      const response = await onshapeClient.getElements(did, vid, limit, offset);
+
+      if (!response || response.length === 0) {
+        break;
+      }
+
+      allDocuments.push(...response);
+
+      if (response.length < limit) {
+        break;
+      }
+
+      offset += limit;
+    }
+
+    return {
+      data: allDocuments,
+      error: null
+    };
+  } catch (error) {
+    console.error(error);
+    return {
+      data: null,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to get versions from Onshape"
+    };
+  }
+}
