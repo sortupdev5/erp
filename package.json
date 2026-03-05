@@ -11,7 +11,6 @@
     "@ai-sdk/anthropic": "^2.0.41",
     "@ai-sdk/openai": "^2.0.60",
     "@ai-sdk/react": "^2.0.86",
-    "@carbon/auth": "*",
     "@carbon/database": "*",
     "@carbon/documents": "*",
     "@carbon/form": "*",
@@ -107,8 +106,6 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@carbon/tailwind": "*",
-    "@carbon/tsconfig": "*",
     "@trigger.dev/build": "4.0.6",
     "@types/d3": "^7.4.0",
     "@types/nprogress": "^0.2.0",
